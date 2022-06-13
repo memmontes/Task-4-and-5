@@ -1,0 +1,346 @@
+############################################################################################################
+#### TASK On ATAC-Seq data - Task 4 and 5 ##################################################################
+
+############################################################################################################
+
+### FIRST STEP: download the data
+
+../bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_title=ATAC-seq&biosample_ontology.term_name=stomach&biosample_ontology.term_name=sigmoid+colon&files.file_type=bam&files.file_type=bed+idr_ranked_peak&files.file_type=bed+narrowPeak&files.file_type=bigBed+narrowPeak&files.file_type=bigWig&files.file_type=fastq&type=Experiment&files.analyses.status=released&files.preferred_default=true"
+
+grep -F H3K27ac metadata.tsv | grep -F sigmoid_colon | awk 'BEGIN{FS="\t"}$2=="fastq"{n++}END{print n}' 
+
+############################################################################################################
+
+################### Download peak calling and fold-change signal files #####################################
+############################################################################################################
+
+### SECOND STEP: get the bigbed files
+
+# get H3K27ac "H3ac" bigbed files
+
+
+grep -F H3K27ac metadata.tsv |\
+grep -F "bigBed_narrowPeak" |\
+grep -F "pseudoreplicated_peaks" |\
+grep -F "GRCh38" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' |\
+sort -k2,2 -k1,1r |\
+sort -k2,2 -u > analyses/H3acbigBed.peaks.ids.txt
+
+
+cut -f1 analyses/H3acbigBed.peaks.ids.txt |\
+while read filename; do
+wget -P data/H3me1bigBed.files "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+# get H3K4me1 "H3me1" bigbed files
+
+grep -F H3K4me1 metadata.tsv |\
+grep -F "bigBed_narrowPeak" |\
+grep -F "pseudoreplicated_peaks" |\
+grep -F "GRCh38" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' |\
+sort -k2,2 -k1,1r |\
+sort -k2,2 -u > analyses/H3me1bigBed.peaks.ids.txt
+
+
+cut -f1 analyses/H3me1bigBed.peaks.ids.txt |\
+while read filename; do
+wget -P data/H3me1bigBed.files "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+##########################################################################################################
+
+# THIRD STEP: get the bigWig FC files
+
+## get H3K27ac "H3ac" bigWig files
+
+grep -F H3K27ac metadata.tsv |\
+grep -F "bigWig" |\
+grep -F "fold_change_over_control" |\
+grep -F "GRCh38" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' |\
+sort -k2,2 -k1,1r |\
+sort -k2,2 -u > analyses/bigWig.FC.ids.txt
+
+cut -f1 analyses/bigWig.FC.ids.txt |\
+while read filename; do
+  wget -P data/bigWig.files "https://www.encodeproject.org/files/$filename/@@download/$filename.bigWig"
+done
+
+mv bigWig.FC.ids.txt H3acbigWig.FC.ids.txt
+
+## get H3K4me1 "H3me1" bigWig files
+
+grep -F H3K4me1 metadata.tsv |\
+grep -F "bigWig" |\
+grep -F "fold_change_over_control" |\
+grep -F "GRCh38" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1, $11, $23}' |\
+sort -k2,2 -k1,1r |\
+sort -k2,2 -u > analyses/bigWig.FC.ids.txt
+
+cut -f1 analyses/bigWig.FC.ids.txt |\
+while read filename; do
+  wget -P data/bigWig.files "https://www.encodeproject.org/files/$filename/@@download/$filename.bigWig"
+done
+
+mv bigWig.FC.ids.txt H3me1bigWig.FC.ids.txt
+
+#########################################################################################################
+
+### FOURTH STEP: convert to bed files 
+
+cut -f1 analyses/H3acbigBed.peaks.ids.txt |\
+while read filename; do
+  bigBedToBed data/bigBed.files/"$filename".bigBed data/bed.files/"$filename".bed
+done
+
+cut -f1 analyses/H3me1bigBed.peaks.ids.txt |\
+while read filename; do
+  bigBedToBed data/bigBed.files/"$filename".bigBed data/bed.files/"$filename".bed
+done
+
+##########################################################################################################
+
+### FIFTH STEP: check the integrity
+
+for file_type in bigBed bigWig; do
+
+  # retrieve original MD5 hash from the metadata
+  ../bin/selectRows.sh <(cut -f1 analyses/"$file_type".*.ids.txt) metadata.tsv | cut -f1,46 > data/"$file_type".files/md5sum.txt
+
+  # compute MD5 hash on the downloaded files 
+  cat data/"$file_type".files/md5sum.txt |\
+  while read filename original_md5sum; do 
+    md5sum data/"$file_type".files/"$filename"."$file_type" |\
+    awk -v filename="$filename" -v original_md5sum="$original_md5sum" 'BEGIN{FS=" "; OFS="\t"}{print filename, original_md5sum, $1}' 
+  done > tmp 
+  mv tmp data/"$file_type".files/md5sum.txt
+
+  # make sure there are no files for which original and computed MD5 hashes differ
+  awk '$2!=$3' data/"$file_type".files/md5sum.txt
+
+done
+
+############################################################################################################
+################### Download Annotation files and annotate #################################################
+############################################################################################################
+
+### SIXTH STEP: Annotation
+
+# Take as genome reference: GRCh38
+
+mkdir annotation
+wget -P annotation "https://www.encodeproject.org/files/gencode.v24.primary_assembly.annotation/@@download/gencode.v24.primary_assembly.annotation.gtf.gz"
+
+# uncompress
+gunzip annotation/gencode.v24.primary_assembly.annotation.gtf.gz
+
+less annotation/gencode.v24.primary_assembly.annotation.gtf
+
+# Convert the gtf annotation file to a BED format.
+
+awk '$3=="gene"' annotation/gencode.v24.primary_assembly.annotation.gtf |\
+grep -F "protein_coding" |\
+cut -d ";" -f1 |\
+awk 'BEGIN{OFS="\t"}{print $1, $4, $5, $10, 0, $7, $10}' |\
+sed 's/\"//g' |\
+awk 'BEGIN{FS=OFS="\t"}$1!="chrM"{$2=($2-1); print $0}' > annotation/gencode.v24.protein.coding.gene.body.bed
+
+# now, we have gene body coordinates of protein-coding genes (chr, start, end, strand)
+
+#############################################################################################################
+
+### SEVENTH STEP: Task 4, extract protein-coding genes and most and less expressed genes in each tissue
+
+############################################################################################################
+################### Prepare a BED file with gene body coordinates of protein-coding genes ##################
+############################################################################################################
+
+# Bed files were obtained in the previous step
+
+## QUESTION:
+## For each tissue, run an intersection analysis using BEDTools, and report:
+## 1) the number of peaks that intersect promoter regions, 
+## 2) the number of peaks that fall outside gene coordinates (whole gene body, not just the promoter regions). 
+
+mkdir data
+
+cut -f1 analyses/H3acbigBed.peaks.ids.txt |\
+while read filename; do
+  wget -P data "https://www.encodeproject.org/files/$filename/@@download/$filename.tsv"
+done
+
+cut -f1 analyses/H3me1bigBed.peaks.ids.txt |\
+while read filename; do
+  wget -P data "https://www.encodeproject.org/files/$filename/@@download/$filename.tsv"
+done
+
+
+##################################################################################################
+##################################################################################################
+
+#####get bed files for ATAC-seq peaks out of the gene body
+
+cut -f-2 analyses/H3acbigBed.peaks.ids.txt |\
+while read filename tissue; do 
+  bedtools intersect -v -a annotation/gencode.v24.protein.coding.gene.body.bed -b data/bed.files/"$filename".bed |\
+sort -u > analyses/peaks.analysis/genes.no.peaks.gene.body."$tissue".ATAC-seq.bed
+done
+
+cut -f-2 analyses/H3me1bigBed.peaks.ids.txt |\
+while read filename tissue; do 
+  bedtools intersect -v -a annotation/gencode.v24.protein.coding.gene.body.bed -b data/bed.files/"$filename".bed |\
+sort -u > analyses/peaks.analysis/genes.no.peaks.gene.body."$tissue".ATAC-seq.bed
+done
+
+###################################################################################################
+############ Retrieve for each tissue two sets of highly and lowly expressed genes ################
+###################################################################################################
+
+
+# the following gene matrices were considered:
+#ENCFF268RWA	sigmoid_colon
+#ENCFF918KPC	stomach
+
+echo -e "ENCFF268RWA\tsigmoid_colon\nENCFF918KPC\tstomach" > analyses/tsv.totalRNASeq.ids.txt
+
+# then, the matrices were put into a folder:
+
+mkdir data/tsv.files
+
+cut -f1 analyses/tsv.totalRNASeq.ids.txt |\
+while read filename; do
+  wget -P data/tsv.files "https://www.encodeproject.org/files/$filename/@@download/$filename.tsv"
+done
+
+# the, protein coding genes were selected:
+
+cut -f1 analyses/tsv.totalRNASeq.ids.txt |\
+while read filename; do 
+  ../bin/selectRows.sh <(cut -f4 annotation/gencode.v24.protein.coding.gene.body.bed) <(cut -f1,6 data/tsv.files/"$filename".tsv) > tmp
+  mv tmp data/tsv.files/"$filename".tsv
+done
+
+# finally, the most and less 1000 expressed genes are obtained
+# Select the 1000 most expressed genes in each of the two tissues (from the head):
+
+cat analyses/tsv.totalRNASeq.ids.txt |\
+while read filename tissue; do
+  sort -k2,2gr data/tsv.files/"$filename".tsv |\
+  head -1000 |\
+  cut -f1 > analyses/"$tissue".1000.most.expressed.genes.txt
+done
+
+#Select the 1000 least expressed genes in each of the two tissues (from the tail):
+
+cat analyses/tsv.totalRNASeq.ids.txt |\
+while read filename tissue; do 
+  sort -k2,2gr data/tsv.files/"$filename".tsv |\
+  tail -1000 |\
+  cut -f1 > analyses/"$tissue".1000.least.expressed.genes.txt
+done
+
+# then, prepare the BED files for the 1000 most and least expressed genes in the two tissues:
+
+
+for tissue in stomach sigmoid_colon; do
+  ../bin/selectRows.sh analyses/"$tissue".1000.least.expressed.genes.txt <(awk 'BEGIN{FS=OFS="\t"}{print $4, $0}' annotation/gencode.v24.protein.coding.gene.body.bed) |\
+  cut -f2- > annotation/"$tissue".1000.least.expressed.genes.bed
+done
+
+
+#############################################################################################################
+### EIGTH STEP: Task 5, regulatory elements
+############################################################################################################
+
+# the bed and peak files are copied to the folder of regulatory elements:
+
+#Task 5.1: Create a folder regulatory_elements inside epigenomics_uvic. This will be the folder where you store all your subsequent results.
+
+mkdir regulatory_elements
+
+#Task 5.2: Distal regulatory regions are usually found to be flanked by both H3K27ac and H3K4me1. From your starting catalogue of open regions in each tissue, select those that overlap peaks of H3K27ac AND H3K4me1 in the corresponding tissue. You will get a list of candidate distal regulatory elements for each tissue. How many are they?
+for tissue in stomach sigmoid_colon; do
+cp ./ATAC-seq/analyses/peaks.analysis/genes.no.peaks.gene.body."$tissue".ATAC-seq.bed ./regulatory_elements/ ;
+done
+
+# Convert bigBed files of H3K27ac and H3K4me1  peaks to BED files with the bigBedToBed command:
+
+mkdir data/bed.files
+
+cut -f1 analyses/H3acbigBed.peaks.ids.txt |\
+while read filename; do
+  bigBedToBed data/bigBed.files/"$filename".bigBed data/bed.files/"$filename".bed
+done
+
+cut -f1 analyses/H3me1bigBed.peaks.ids.txt |\
+while read filename; do
+  bigBedToBed data/bigBed.files/"$filename".bigBed data/bed.files/"$filename".bed
+done
+
+# Retrieve genes with peaks of H3K4me3 and H3K4me1 at the promoter region in each tissue. Note: promoters ([-2 kb, +2 Kb] from TSS) of protein-coding genes were previously saved.
+
+cut -f-2 analyses/H3acbigBed.peaks.ids.txt |\
+while read filename tissue; do 
+  bedtools intersect -a annotation/gencode.v24.protein.coding.non.redundant.TSS.bed -b data/bed.files/"$filename".bed -u |\
+  cut -f7 |\
+  sort -u > analyses/peaks.analysis/genes.with.peaks."$tissue".H3K4me3.txt
+done
+
+
+cut -f-2 analyses/H3me1bigBed.peaks.ids.txt |\
+while read filename tissue; do 
+  bedtools intersect -a annotation/gencode.v24.protein.coding.non.redundant.TSS.bed -b data/bed.files/"$filename".bed -u |\
+  cut -f7 |\
+  sort -u > analyses/peaks.analysis/genes.with.peaks."$tissue".H3K4me3.txt
+done
+
+
+#######now find intersections for each tissue between ac, me1 and ATAC-seq annotations
+
+#bedtools intersect -a ./genes.no.peaks.gene.body.stomach.ATAC-seq.bed -b ./ENCFF977LBD.bed ./ENCFF844XRN.bed
+bedtools intersect -u -a ./genes.no.peaks.gene.body.stomach.ATAC-seq.bed -b ./ENCFF977LBD.bed |sort -u > stomach_reg1.bed
+bedtools intersect -u -a ./stomach_reg1.bed -b ./ENCFF844XRN.bed |sort -u > stomach_reg.bed
+
+
+bedtools intersect -u -a ./genes.no.peaks.gene.body.sigmoid_colon.ATAC-seq.bed -b ./ENCFF872UHN.bed > sigmoid_reg1.bed
+bedtools intersect -u -a sigmoid_reg1.bed -b ./ENCFF724ZOF.bed |sort -u > sigmoid_colon_reg.bed
+
+
+#Task5.3: Focus on regulatory elements that are located on chromosome 1 
+
+for tissue in stomach sigmoid_colon; do
+ awk '$1="chr1"' "$tissue"_reg.bed > ./"$tissue"_reg_chr1.bed 
+ awk '{if ($6=="+"){start=$2} else {start=$3}; print $4, start}' FS=' ' OFS='\t' "$tissue"_reg_chr1.bed > ./"$tissue"_reg_chr1_start.tsv ;
+done
+
+
+#Task5.4: Focus on protein-coding genes located on chromosome 1.
+
+awk '$1="chr1"' ./ATAC-seq/annotation/gencode.v24.protein.coding.gene.body.bed > ./regulatory_elements/gene.body.chr1.bed
+
+awk '{if ($6=="+"){start=$2} else {start=$3}; print $4, start}' FS=' ' OFS='\t' ./regulatory_elements/gene.body.chr1.bed > ./regulatory_elements/task4.gene.body.chr1.bed 
+
+
+#Task5.5: check phython script
+
+python ./bin/get.distance.py --input ./regulatory_elements/task4.gene.starts.tsv --start 980000
+
+# Worked.
+
+#Task5.6: For each regulatory element contained in the file regulatory.elements.starts.tsv, retrieve the closest gene and the distance to the closest gene using the python script
+
+
+cat regulatory.elements.starts.tsv | while read element start; do 
+   python ../bin/get.distance.py ... # to be completed by you; 
+done > regulatoryElements.genes.distances.tsv
+
+
+#Task7: not done
+
+
+## Note: in me@vm:~/epigenomics_uvic/bin$ there are all R scripts and sh files need to run some analyses. Those based on R could not be run due to installation restrictions 
+
+
